@@ -48,6 +48,14 @@ python shear_wall_pzt_damage_imaging.py --realtime-demo --sensor-csv your_layout
 - `alarm`：是否触发连续告警（0/1）
 - `estimated_x/estimated_y`：当前估计损伤位置
 
+## 7) 实时图像演示（动态热力图）
+```bash
+python shear_wall_pzt_damage_imaging.py --realtime-plot --sensor-csv your_layout.csv
+```
+说明：
+- 该模式会逐帧刷新概率图（动态图像），不是一次性静态图；
+- 你看到的蓝色 `x` 会随帧更新，表示当前时刻估计的损伤位置。
+
 运行后会打印：
 - 传感器数量与通道数量
 - baseline/current 数据维度

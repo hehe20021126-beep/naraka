@@ -380,6 +380,78 @@ def run_realtime_monitor_demo(sensor_csv: str) -> None:
         )
 
 
+def run_realtime_plot_demo(sensor_csv: str, interval_sec: float = 0.35) -> None:
+    """实时图像演示：每帧更新概率热力图（不是单张静态图）。"""
+    data = build_dataset_for_test_with_positions(sensor_csv)
+    sensors = SensorArray2D(positions=data["sensor_positions"])
+    pair_arr = data["pairs"]
+    pairs = [tuple(p) for p in pair_arr]
+    baseline = {tuple(p): s for p, s in zip(pair_arr, data["baseline"])}
+    wall_x = tuple(data["wall_x"])
+    wall_y = tuple(data["wall_y"])
+    t = data["time"]
+    true_damage = tuple(data["true_damage"])
+
+    monitor = RealTimeDamageMonitor(
+        sensors=sensors,
+        pairs=pairs,
+        baseline_signals=baseline,
+        wall_x=wall_x,
+        wall_y=wall_y,
+        config=RealTimeMonitorConfig(alarm_threshold=0.30, smoothing_alpha=0.30, min_alarm_frames=3),
+    )
+
+    material = MaterialConfig()
+    ex = ExcitationConfig()
+    strengths = [0.00, 0.00, 0.02, 0.01, 0.00, 0.03, 0.10, 0.15, 0.20, 0.26, 0.32, 0.38, 0.42, 0.46, 0.50]
+
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(7, 6))
+    heat = ax.imshow(
+        np.zeros((120, 120)),
+        origin="lower",
+        extent=[wall_x[0], wall_x[1], wall_y[0], wall_y[1]],
+        cmap="hot",
+        vmin=0.0,
+        vmax=1.0,
+        aspect="equal",
+    )
+    cbar = plt.colorbar(heat, ax=ax, label="Damage Probability")
+    _ = cbar
+    spos = sensors.positions
+    ax.scatter(spos[:, 0], spos[:, 1], c="cyan", s=35, edgecolors="k", label="PZT Sensors")
+    ax.scatter(*true_damage, c="lime", s=110, marker="*", edgecolors="k", label="True Damage")
+    est_scatter = ax.scatter([], [], c="blue", s=80, marker="x", label="Estimated Peak")
+    title = ax.set_title("Real-time Damage Imaging")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.legend(loc="upper right")
+
+    for k, ds in enumerate(strengths, start=1):
+        current = simulate_signals(
+            sensors, pairs, t,
+            wave_speed=material.wave_speed,
+            damage_xy=true_damage if ds > 0 else None,
+            damage_strength=ds,
+            f0=ex.center_freq,
+            noise_std=0.01,
+            attenuation_alpha=material.attenuation_alpha,
+            baseline_drift=material.baseline_drift,
+        )
+        result = monitor.update(current)
+        pmap = result["probability_map"]
+        est_x, est_y = result["estimated_xy"]
+        heat.set_data(pmap)
+        est_scatter.set_offsets(np.array([[est_x, est_y]]))
+        title.set_text(
+            f"Real-time Damage Imaging | frame={k} | EWMA={result['ewma_score']:.3f} | alarm={int(result['alarm'])}"
+        )
+        fig.canvas.draw_idle()
+        plt.pause(interval_sec)
+    plt.ioff()
+    plt.show()
+
+
 def demo(
     show_plot: bool = True,
     save_path: str | None = None,
@@ -471,8 +543,15 @@ if __name__ == "__main__":
         action="store_true",
         help="运行实时监测演示（逐帧输出损伤分数与告警）",
     )
+    parser.add_argument(
+        "--realtime-plot",
+        action="store_true",
+        help="运行实时热力图演示（逐帧更新图像）",
+    )
     args = parser.parse_args()
-    if args.realtime_demo:
+    if args.realtime_plot:
+        run_realtime_plot_demo(sensor_csv=args.sensor_csv)
+    elif args.realtime_demo:
         run_realtime_monitor_demo(sensor_csv=args.sensor_csv)
     else:
         demo(show_plot=not args.no_show, save_path=args.save_path, sensor_csv=args.sensor_csv)
