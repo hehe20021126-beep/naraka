@@ -65,6 +65,15 @@ class ExcitationConfig:
     center_freq: float = 50_000     # 50 kHz，工程常用 PZT 激励频段
 
 
+@dataclass
+class RealTimeMonitorConfig:
+    """实时监测参数。"""
+
+    alarm_threshold: float = 0.32       # 损伤告警阈值（0~1）
+    smoothing_alpha: float = 0.25       # EWMA 平滑系数
+    min_alarm_frames: int = 3           # 连续告警帧数阈值
+
+
 def load_sensor_array_from_csv(csv_path: str) -> SensorArray2D:
     """从 CSV 读取传感器坐标，格式: x,y（单位 m）。"""
     positions = np.loadtxt(csv_path, delimiter=",", skiprows=1)
@@ -211,6 +220,59 @@ def rapid_damage_imaging(
     return xx, yy, pmap
 
 
+class RealTimeDamageMonitor:
+    """实时损伤监测器：逐帧输入 current_signals，输出健康分数与告警。"""
+
+    def __init__(
+        self,
+        sensors: SensorArray2D,
+        pairs: List[Tuple[int, int]],
+        baseline_signals: Dict[Tuple[int, int], np.ndarray],
+        wall_x: Tuple[float, float],
+        wall_y: Tuple[float, float],
+        config: RealTimeMonitorConfig | None = None,
+    ) -> None:
+        self.sensors = sensors
+        self.pairs = pairs
+        self.baseline_signals = baseline_signals
+        self.wall_x = wall_x
+        self.wall_y = wall_y
+        self.cfg = config or RealTimeMonitorConfig()
+        self.ewma_score = 0.0
+        self.alarm_streak = 0
+
+    def update(self, current_signals: Dict[Tuple[int, int], np.ndarray]) -> Dict[str, object]:
+        xx, yy, pmap = rapid_damage_imaging(
+            self.sensors,
+            self.pairs,
+            self.baseline_signals,
+            current_signals,
+            x_range=self.wall_x,
+            y_range=self.wall_y,
+            grid_nx=120,
+            grid_ny=120,
+            beta=1.04,
+            sigma=0.16,
+        )
+        est_x, est_y, peak = estimate_damage_location(xx, yy, pmap)
+        self.ewma_score = (1 - self.cfg.smoothing_alpha) * self.ewma_score + self.cfg.smoothing_alpha * peak
+
+        if self.ewma_score >= self.cfg.alarm_threshold:
+            self.alarm_streak += 1
+        else:
+            self.alarm_streak = 0
+
+        alarm = self.alarm_streak >= self.cfg.min_alarm_frames
+        return {
+            "peak_score": float(peak),
+            "ewma_score": float(self.ewma_score),
+            "alarm": bool(alarm),
+            "alarm_streak": int(self.alarm_streak),
+            "estimated_xy": (float(est_x), float(est_y)),
+            "probability_map": pmap,
+        }
+
+
 def estimate_damage_location(
     xx: np.ndarray,
     yy: np.ndarray,
@@ -271,6 +333,51 @@ def build_dataset_for_test_with_positions(sensor_csv: str) -> Dict[str, np.ndarr
         "current": current,
         "true_damage": np.asarray(true_damage),
     }
+
+
+def run_realtime_monitor_demo(sensor_csv: str) -> None:
+    """实时监测演示：模拟损伤从无到有，连续帧触发告警。"""
+    data = build_dataset_for_test_with_positions(sensor_csv)
+    sensors = SensorArray2D(positions=data["sensor_positions"])
+    pair_arr = data["pairs"]
+    pairs = [tuple(p) for p in pair_arr]
+    baseline = {tuple(p): s for p, s in zip(pair_arr, data["baseline"])}
+    wall_x = tuple(data["wall_x"])
+    wall_y = tuple(data["wall_y"])
+    t = data["time"]
+    true_damage = tuple(data["true_damage"])
+
+    monitor = RealTimeDamageMonitor(
+        sensors=sensors,
+        pairs=pairs,
+        baseline_signals=baseline,
+        wall_x=wall_x,
+        wall_y=wall_y,
+        config=RealTimeMonitorConfig(alarm_threshold=0.30, smoothing_alpha=0.30, min_alarm_frames=3),
+    )
+
+    material = MaterialConfig()
+    ex = ExcitationConfig()
+    # 前 6 帧近似无损伤，后 9 帧损伤逐步增强
+    strengths = [0.00, 0.00, 0.02, 0.01, 0.00, 0.03, 0.10, 0.15, 0.20, 0.26, 0.32, 0.38, 0.42, 0.46, 0.50]
+    print("frame,damage_strength,peak_score,ewma_score,alarm,estimated_x,estimated_y")
+    for k, ds in enumerate(strengths, start=1):
+        current = simulate_signals(
+            sensors, pairs, t,
+            wave_speed=material.wave_speed,
+            damage_xy=true_damage if ds > 0 else None,
+            damage_strength=ds,
+            f0=ex.center_freq,
+            noise_std=0.01,
+            attenuation_alpha=material.attenuation_alpha,
+            baseline_drift=material.baseline_drift,
+        )
+        result = monitor.update(current)
+        est_x, est_y = result["estimated_xy"]
+        print(
+            f"{k},{ds:.2f},{result['peak_score']:.3f},{result['ewma_score']:.3f},"
+            f"{int(result['alarm'])},{est_x:.3f},{est_y:.3f}"
+        )
 
 
 def demo(
@@ -359,5 +466,13 @@ if __name__ == "__main__":
         default="sensor_layout_example.csv",
         help="传感器坐标 CSV（列名 x,y；单位 m）",
     )
+    parser.add_argument(
+        "--realtime-demo",
+        action="store_true",
+        help="运行实时监测演示（逐帧输出损伤分数与告警）",
+    )
     args = parser.parse_args()
-    demo(show_plot=not args.no_show, save_path=args.save_path, sensor_csv=args.sensor_csv)
+    if args.realtime_demo:
+        run_realtime_monitor_demo(sensor_csv=args.sensor_csv)
+    else:
+        demo(show_plot=not args.no_show, save_path=args.save_path, sensor_csv=args.sensor_csv)

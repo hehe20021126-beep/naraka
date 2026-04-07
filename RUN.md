@@ -38,6 +38,16 @@ x,y
 python shear_wall_pzt_damage_imaging.py --sensor-csv your_layout.csv --no-show --save-path your_map.png
 ```
 
+## 6) 实时监测演示（逐帧输出告警）
+```bash
+python shear_wall_pzt_damage_imaging.py --realtime-demo --sensor-csv your_layout.csv
+```
+输出字段：
+- `peak_score`：当前帧损伤概率峰值
+- `ewma_score`：平滑后的实时监测分数
+- `alarm`：是否触发连续告警（0/1）
+- `estimated_x/estimated_y`：当前估计损伤位置
+
 运行后会打印：
 - 传感器数量与通道数量
 - baseline/current 数据维度
